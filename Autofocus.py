@@ -93,7 +93,7 @@ def capture_frame_and_print_text(img):
 
 # gstreamer_pipeline returns a GStreamer pipeline for capturing from the CSI camera
 # Defaults to 1280x720 @ 60fps 
-# Flip the image by setting the flip_method (most common values: 0 and 2)
+# Flip the image by setting the flip_method (2 rotates 180 degrees)
 # display_width and display_height determine the size of the window on the screen
 
 def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=640, display_height=360, framerate=60, flip_method=0) :   
@@ -114,9 +114,9 @@ def show_camera():
     focal_distance = 10
     focus_finished = False
     last_frame = None
-    # To flip the image, modify the flip_method parameter (0 and 2 are the most common)
-    print(gstreamer_pipeline(flip_method=0))
-    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
+    # flip_method=2 rotates the image 180 degrees, which flips both axes.
+    print(gstreamer_pipeline(flip_method=2))
+    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=2), cv2.CAP_GSTREAMER)
     focusing(focal_distance)
     skip_frame = 2
     if cap.isOpened():
