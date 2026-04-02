@@ -6,8 +6,8 @@ import pytesseract
 # --- CONFIGURATION ---
 EXCEL_FILE = "orders.xlsx"
 SENSOR_ID = 0
-FLIP_X = False   # Set True to flip horizontally (mirror)
-FLIP_Y = False   # Set True to flip vertically (upside down)
+FLIP_X = True   # Set True to flip horizontally (mirror)
+FLIP_Y = True   # Set True to flip vertically (upside down)
 
 def gstreamer_pipeline(sensor_id=0, width=3280, height=2464, fps=21):
     return (
