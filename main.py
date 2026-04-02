@@ -9,9 +9,12 @@ SENSOR_ID = 0
 FLIP_X = True   # Set True to flip horizontally (mirror)
 FLIP_Y = True   # Set True to flip vertically (upside down)
 
-def gstreamer_pipeline(sensor_id=0, width=3280, height=2464, fps=21):
+def gstreamer_pipeline(sensor_id=0, width=1920, height=1080, fps=30):
     return (
-        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"nvarguscamerasrc sensor-id={sensor_id} "
+        "exposuretimerange=\"10000000 80000000\" "
+        "gainrange=\"1 4\" "
+        "ispdigitalgainrange=\"1 1\" ! "
         f"video/x-raw(memory:NVMM), width={width}, height={height}, framerate={fps}/1 ! "
         "nvvidconv ! video/x-raw, format=BGRx ! "
         "videoconvert ! video/x-raw, format=BGR ! appsink drop=true sync=false"
