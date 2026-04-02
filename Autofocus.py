@@ -91,12 +91,25 @@ def capture_frame_and_print_text(img):
         print('No text found.')
 
 
+def reset_autofocus_state():
+    return {
+        'max_index': 10,
+        'max_value': 0.0,
+        'last_value': 0.0,
+        'dec_count': 0,
+        'focal_distance': 10,
+        'focus_finished': False,
+        'skip_frame': 4,
+        'blur_count': 0,
+    }
+
+
 # gstreamer_pipeline returns a GStreamer pipeline for capturing from the CSI camera
-# Defaults to 1280x720 @ 60fps 
+# Defaults to 1280x720 @ 30fps 
 # Flip the image by setting the flip_method (2 rotates 180 degrees)
 # display_width and display_height determine the size of the window on the screen
 
-def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=640, display_height=360, framerate=60, flip_method=0) :   
+def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=1280, display_height=720, framerate=30, flip_method=0) :   
     return ('nvarguscamerasrc ! ' 
     'video/x-raw(memory:NVMM), '
     'width=(int)%d, height=(int)%d, '
@@ -107,20 +120,16 @@ def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=64
     'video/x-raw, format=(string)BGR ! appsink'  % (capture_width,capture_height,framerate,flip_method,display_width,display_height))
 
 def show_camera():
-    max_index = 10
-    max_value = 0.0
-    last_value = 0.0
-    dec_count = 0
-    focal_distance = 10
-    focus_finished = False
+    state = reset_autofocus_state()
     last_frame = None
+    refocus_threshold = 0.75
+    blur_limit = 4
     # flip_method=2 rotates the image 180 degrees, which flips both axes.
     print(gstreamer_pipeline(flip_method=2))
     cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=2), cv2.CAP_GSTREAMER)
-    focusing(focal_distance)
-    skip_frame = 2
+    focusing(state['focal_distance'])
     if cap.isOpened():
-        window_handle = cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
+        cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
         # Window 
         while cv2.getWindowProperty('CSI Camera',0) >= 0:
             ret_val, img = cap.read()
@@ -131,35 +140,48 @@ def show_camera():
             display_img, text_found = detect_text(img)
             cv2.imshow('CSI Camera', display_img)
             
-            if skip_frame == 0:
-                skip_frame = 3 
-                if dec_count < 6 and focal_distance < 1000:
+            current_sharpness = laplacian(img)
+
+            if state['skip_frame'] == 0:
+                state['skip_frame'] = 4
+                if state['dec_count'] < 6 and state['focal_distance'] <= 1000:
                     #Adjust focus
-                    focusing(focal_distance)
-                    #Take image and calculate image clarity
-                    val = laplacian(img)
+                    focusing(state['focal_distance'])
                     #Find the maximum image clarity
-                    if val > max_value:
-                        max_index = focal_distance
-                        max_value = val
+                    if current_sharpness > state['max_value']:
+                        state['max_index'] = state['focal_distance']
+                        state['max_value'] = current_sharpness
                         
                     #If the image clarity starts to decrease
-                    if val < last_value:
-                        dec_count += 1
+                    if current_sharpness < state['last_value']:
+                        state['dec_count'] += 1
                     else:
-                        dec_count = 0
+                        state['dec_count'] = 0
                     #Image clarity is reduced by six consecutive frames
-                    if dec_count < 6:
-                        last_value = val
+                    if state['dec_count'] < 6:
+                        state['last_value'] = current_sharpness
                         #Increase the focal distance
-                        focal_distance += 10
+                        state['focal_distance'] += 10
 
-                elif not focus_finished:
+                elif not state['focus_finished']:
                     #Adjust focus to the best
-                    focusing(max_index)
-                    focus_finished = True
+                    focusing(state['max_index'])
+                    state['focus_finished'] = True
+                    state['blur_count'] = 0
             else:
-                skip_frame = skip_frame - 1
+                state['skip_frame'] = state['skip_frame'] - 1
+
+            if state['focus_finished'] and state['max_value'] > 0:
+                if current_sharpness < state['max_value'] * refocus_threshold:
+                    state['blur_count'] += 1
+                else:
+                    state['blur_count'] = 0
+
+                if state['blur_count'] >= blur_limit:
+                    current_focus = focuser.get(Focuser.OPT_FOCUS)
+                    state = reset_autofocus_state()
+                    state['focal_distance'] = max(0, current_focus - 80)
+                    focusing(state['focal_distance'])
             # This also acts as 
             keyCode = cv2.waitKey(16) & 0xff
             # Stop the program on the ESC key
@@ -169,12 +191,8 @@ def show_camera():
                 if last_frame is not None:
                     capture_frame_and_print_text(last_frame)
             elif keyCode == ord('r'):
-                max_index = 10
-                max_value = 0.0
-                last_value = 0.0
-                dec_count = 0
-                focal_distance = 10
-                focus_finished = False
+                state = reset_autofocus_state()
+                focusing(state['focal_distance'])
         cap.release()
         cv2.destroyAllWindows()
     else:
