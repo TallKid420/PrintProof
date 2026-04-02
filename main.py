@@ -14,10 +14,10 @@ df = pd.read_excel(EXCEL_FILE)
 
 def get_pipeline():
     return (
-        f"nvarguscamerasrc sensor-id={SENSOR_ID} ! "
-        "video/x-raw(memory:NVMM), width=1920, height=1080, framerate=30/1 ! "
+        "nvarguscamerasrc sensor-id=0 ! "
+        "video/x-raw(memory:NVMM), width=1280, height=720, framerate=30/1 ! "
         "nvvidconv ! video/x-raw, format=BGRx ! "
-        "videoconvert ! video/x-raw, format=BGR ! appsink"
+        "videoconvert ! video/x-raw, format=BGR ! appsink drop=true"
     )
 
 def extract_order_id(text):
