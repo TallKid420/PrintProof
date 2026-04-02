@@ -1,9 +1,12 @@
 import cv2
 import os
+import json
+import re
 import shutil
 import subprocess
 import tempfile
-from datetime import datetime
+import urllib.error
+import urllib.request
 from Focuser import Focuser
 
 focuser = None
@@ -25,21 +28,46 @@ def laplacian(img):
 	return cv2.mean(img_sobel)[0]
 
 
-def detect_text(img):
-    """Detect text regions in the image using MSER.
-    Returns annotated image and True if text-like regions are found."""
+def preprocess_text_image(img):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    mser = cv2.MSER_create(5, 60, 2600)
-    regions, _ = mser.detectRegions(gray)
+    normalized = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+    threshold = cv2.adaptiveThreshold(
+        normalized,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11,
+    )
+    inverted = cv2.bitwise_not(threshold)
+    repaired = cv2.morphologyEx(
+        inverted,
+        cv2.MORPH_CLOSE,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+        iterations=1,
+    )
+    return cv2.bitwise_not(repaired)
+
+
+def detect_text(img, processed=None):
+    if processed is None:
+        processed = preprocess_text_image(img)
+
+    grouped = cv2.dilate(
+        cv2.bitwise_not(processed),
+        cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3)),
+        iterations=1,
+    )
+    contours, _ = cv2.findContours(grouped, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     text_found = False
     annotated = img.copy()
-    for region in regions:
-        x, y, w, h = cv2.boundingRect(region.reshape(-1, 1, 2))
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        area = w * h
         aspect = w / float(h) if h > 0 else 0
-        # Filter to plausible text character proportions
-        if 0.1 < aspect < 10 and w > 8 and h > 8:
-            cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 1)
+        if 80 <= area <= 60000 and 0.3 <= aspect <= 20 and h >= 10:
+            cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 0), 2)
             text_found = True
 
     label = "Text Detected" if text_found else "No Text"
@@ -48,68 +76,100 @@ def detect_text(img):
     return annotated, text_found
 
 
-def extract_text(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-    tesseract_path = shutil.which('tesseract')
-    if not tesseract_path:
-        return []
+def extract_text(processed):
+    try:
+        import pytesseract
+        return pytesseract.image_to_string(processed, config='--oem 3 --psm 6')
+    except ImportError:
+        pass
+
+    tesseract_bin = shutil.which('tesseract')
+    if tesseract_bin is None:
+        return ''
 
     temp_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete = False) as temp_file:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_file:
             temp_path = temp_file.name
-
         cv2.imwrite(temp_path, processed)
         result = subprocess.run(
-            [tesseract_path, temp_path, 'stdout', '--psm', '6'],
-            capture_output = True,
-            text = True,
-            check = False,
+            [tesseract_bin, temp_path, 'stdout', '--oem', '3', '--psm', '6'],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        if result.returncode != 0:
-            return []
-
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return result.stdout
     finally:
         if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
 
-def capture_frame_and_print_text(img):
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    image_path = 'capture_{}.png'.format(timestamp)
-    cv2.imwrite(image_path, img)
-    print('Saved image: {}'.format(image_path))
+def format_text(text):
+    text = text.replace('\r\n', '\n')
+    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
 
-    lines = extract_text(img)
-    if lines:
-        print('Text found:')
-        for line in lines:
-            print(line)
-    else:
-        print('No text found.')
+    paragraphs = []
+    for block in re.split(r'\n\s*\n', text):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+
+        merged_lines = [lines[0]]
+        for line in lines[1:]:
+            if re.search(r'[.!?:)]$', merged_lines[-1]):
+                merged_lines.append(line)
+            else:
+                merged_lines[-1] = '{} {}'.format(merged_lines[-1], line)
+
+        paragraphs.append('\n'.join(merged_lines))
+
+    return re.sub(r'[ \t]+', ' ', '\n\n'.join(paragraphs)).strip()
 
 
-def reset_autofocus_state():
-    return {
-        'max_index': 10,
-        'max_value': 0.0,
-        'last_value': 0.0,
-        'dec_count': 0,
-        'focal_distance': 10,
-        'focus_finished': False,
-        'skip_frame': 4,
-        'blur_count': 0,
-    }
+def cleanup_with_ollama(text, model):
+    prompt = (
+        'Clean this OCR output into readable text. Repair broken words and line wraps, '
+        'but do not add facts or rewrite meaning. Preserve paragraph breaks when clear.\n\n'
+        + text
+    )
+    request = urllib.request.Request(
+        'http://127.0.0.1:11434/api/generate',
+        data=json.dumps({'model': model, 'prompt': prompt, 'stream': False}).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode('utf-8'))
+            return payload.get('response', '').strip()
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return text
+
+
+def process_capture(img, ollama_model=None):
+    processed = preprocess_text_image(img)
+    annotated, text_found = detect_text(img, processed=processed)
+    extracted_text = format_text(extract_text(processed))
+
+    if extracted_text and ollama_model:
+        extracted_text = cleanup_with_ollama(extracted_text, ollama_model)
+
+    return annotated, processed, text_found, extracted_text
+
+
+def overlay_preview_status(img, focus_finished):
+    preview = img.copy()
+    status = 'Focus Locked' if focus_finished else 'Autofocusing'
+    cv2.putText(preview, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+    cv2.putText(preview, 'Enter: capture text  R: refocus  Esc: quit', (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+    return preview
 
 
 # gstreamer_pipeline returns a GStreamer pipeline for capturing from the CSI camera
-# Defaults to 1280x720 @ 30fps 
-# Flip the image by setting the flip_method (2 rotates 180 degrees)
+# Defaults to 1280x720 @ 60fps 
+# Flip the image by setting the flip_method (most common values: 0 and 2)
 # display_width and display_height determine the size of the window on the screen
 
-def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=1280, display_height=720, framerate=30, flip_method=0) :   
+def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=640, display_height=360, framerate=60, flip_method=0) :   
     return ('nvarguscamerasrc ! ' 
     'video/x-raw(memory:NVMM), '
     'width=(int)%d, height=(int)%d, '
@@ -119,80 +179,70 @@ def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=12
     'videoconvert ! '
     'video/x-raw, format=(string)BGR ! appsink'  % (capture_width,capture_height,framerate,flip_method,display_width,display_height))
 
-def show_camera():
-    state = reset_autofocus_state()
-    last_frame = None
-    refocus_threshold = 0.75
-    blur_limit = 4
-    # flip_method=2 rotates the image 180 degrees, which flips both axes.
-    print(gstreamer_pipeline(flip_method=2))
-    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=2), cv2.CAP_GSTREAMER)
-    focusing(state['focal_distance'])
+def show_camera(ollama_model=None):
+    max_index = 10
+    max_value = 0.0
+    last_value = 0.0
+    dec_count = 0
+    focal_distance = 10
+    focus_finished = False
+    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
+    focusing(focal_distance)
+    skip_frame = 2
     if cap.isOpened():
         cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
-        # Window 
         while cv2.getWindowProperty('CSI Camera',0) >= 0:
             ret_val, img = cap.read()
             if not ret_val:
                 continue
 
-            last_frame = img.copy()
-            display_img, text_found = detect_text(img)
-            cv2.imshow('CSI Camera', display_img)
+            img = cv2.flip(img, -1)
+            cv2.imshow('CSI Camera', overlay_preview_status(img, focus_finished))
             
-            current_sharpness = laplacian(img)
-
-            if state['skip_frame'] == 0:
-                state['skip_frame'] = 4
-                if state['dec_count'] < 6 and state['focal_distance'] <= 1000:
-                    #Adjust focus
-                    focusing(state['focal_distance'])
-                    #Find the maximum image clarity
-                    if current_sharpness > state['max_value']:
-                        state['max_index'] = state['focal_distance']
-                        state['max_value'] = current_sharpness
+            if skip_frame == 0:
+                skip_frame = 2
+                if dec_count < 6 and focal_distance < 1000:
+                    focusing(focal_distance)
+                    val = laplacian(img)
+                    if val > max_value:
+                        max_index = focal_distance
+                        max_value = val
                         
-                    #If the image clarity starts to decrease
-                    if current_sharpness < state['last_value']:
-                        state['dec_count'] += 1
+                    if val < last_value:
+                        dec_count += 1
                     else:
-                        state['dec_count'] = 0
-                    #Image clarity is reduced by six consecutive frames
-                    if state['dec_count'] < 6:
-                        state['last_value'] = current_sharpness
-                        #Increase the focal distance
-                        state['focal_distance'] += 10
+                        dec_count = 0
+                    if dec_count < 6:
+                        last_value = val
+                        focal_distance += 10
 
-                elif not state['focus_finished']:
-                    #Adjust focus to the best
-                    focusing(state['max_index'])
-                    state['focus_finished'] = True
-                    state['blur_count'] = 0
+                elif not focus_finished:
+                    focusing(max_index)
+                    focus_finished = True
             else:
-                state['skip_frame'] = state['skip_frame'] - 1
+                skip_frame = skip_frame - 1
 
-            if state['focus_finished'] and state['max_value'] > 0:
-                if current_sharpness < state['max_value'] * refocus_threshold:
-                    state['blur_count'] += 1
-                else:
-                    state['blur_count'] = 0
-
-                if state['blur_count'] >= blur_limit:
-                    current_focus = focuser.get(Focuser.OPT_FOCUS)
-                    state = reset_autofocus_state()
-                    state['focal_distance'] = max(0, current_focus - 80)
-                    focusing(state['focal_distance'])
-            # This also acts as 
-            keyCode = cv2.waitKey(16) & 0xff
-            # Stop the program on the ESC key
+            keyCode = cv2.waitKey(1) & 0xff
             if keyCode == 27:
                 break
-            elif keyCode == 13 or keyCode == 10:
-                if last_frame is not None:
-                    capture_frame_and_print_text(last_frame)
-            elif keyCode == ord('r'):
-                state = reset_autofocus_state()
-                focusing(state['focal_distance'])
+            elif keyCode in (10, 13):
+                annotated, processed, text_found, extracted_text = process_capture(img, ollama_model=ollama_model)
+                cv2.imshow('Processed Text', annotated)
+                cv2.imshow('Processed Mask', processed)
+                if extracted_text:
+                    print('\nCaptured text:\n{}\n'.format(extracted_text))
+                elif text_found:
+                    print('\nText-like regions found, but no OCR engine is available. Install pytesseract or tesseract, or pass --ollama-model after OCR is available.\n')
+                else:
+                    print('\nNo text detected in the captured frame.\n')
+            elif keyCode in (ord('r'), ord('R')):
+                max_index = 10
+                max_value = 0.0
+                last_value = 0.0
+                dec_count = 0
+                focal_distance = 10
+                focus_finished = False
+                focusing(focal_distance)
         cap.release()
         cv2.destroyAllWindows()
     else:

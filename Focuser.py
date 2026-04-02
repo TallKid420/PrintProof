@@ -6,11 +6,10 @@ class Focuser:
     bus = None
     CHIP_I2C_ADDR = 0x0C
 
-    def __init__(self, bus, debug = False):
+    def __init__(self, bus, debug=False):
         self.focus_value = 0
         self.bus = bus
         self.debug = debug
-        pass
         
     def read(self):
         return self.focus_value
@@ -61,7 +60,7 @@ class Focuser:
 pass 
 
 def test():
-    focuser = Focuser(7, debug = True)
+    focuser = Focuser(7)
     focuser.set(Focuser.OPT_FOCUS, 0)
     time.sleep(3)
     focuser.set(Focuser.OPT_FOCUS, 1000)
