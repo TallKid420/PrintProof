@@ -6,9 +6,10 @@ class Focuser:
     bus = None
     CHIP_I2C_ADDR = 0x0C
 
-    def __init__(self, bus):
+    def __init__(self, bus, debug = False):
         self.focus_value = 0
         self.bus = bus
+        self.debug = debug
         pass
         
     def read(self):
@@ -54,12 +55,13 @@ class Focuser:
         elif value < info["MIN_VALUE"]:
             value = info["MIN_VALUE"]
         self.write(self.CHIP_I2C_ADDR, value)
-        print("write: {}".format(value))
+        if self.debug:
+            print("write: {}".format(value))
 
 pass 
 
 def test():
-    focuser = Focuser(7)
+    focuser = Focuser(7, debug = True)
     focuser.set(Focuser.OPT_FOCUS, 0)
     time.sleep(3)
     focuser.set(Focuser.OPT_FOCUS, 1000)

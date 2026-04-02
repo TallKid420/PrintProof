@@ -1,6 +1,9 @@
 import cv2
-import numpy as np
 import os
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime
 from Focuser import Focuser
 
 focuser = None
@@ -45,6 +48,49 @@ def detect_text(img):
     return annotated, text_found
 
 
+def extract_text(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    tesseract_path = shutil.which('tesseract')
+    if not tesseract_path:
+        return []
+
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.png', delete = False) as temp_file:
+            temp_path = temp_file.name
+
+        cv2.imwrite(temp_path, processed)
+        result = subprocess.run(
+            [tesseract_path, temp_path, 'stdout', '--psm', '6'],
+            capture_output = True,
+            text = True,
+            check = False,
+        )
+        if result.returncode != 0:
+            return []
+
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def capture_frame_and_print_text(img):
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    image_path = 'capture_{}.png'.format(timestamp)
+    cv2.imwrite(image_path, img)
+    print('Saved image: {}'.format(image_path))
+
+    lines = extract_text(img)
+    if lines:
+        print('Text found:')
+        for line in lines:
+            print(line)
+    else:
+        print('No text found.')
+
+
 # gstreamer_pipeline returns a GStreamer pipeline for capturing from the CSI camera
 # Defaults to 1280x720 @ 60fps 
 # Flip the image by setting the flip_method (most common values: 0 and 2)
@@ -67,6 +113,7 @@ def show_camera():
     dec_count = 0
     focal_distance = 10
     focus_finished = False
+    last_frame = None
     # To flip the image, modify the flip_method parameter (0 and 2 are the most common)
     print(gstreamer_pipeline(flip_method=0))
     cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
@@ -77,6 +124,10 @@ def show_camera():
         # Window 
         while cv2.getWindowProperty('CSI Camera',0) >= 0:
             ret_val, img = cap.read()
+            if not ret_val:
+                continue
+
+            last_frame = img.copy()
             display_img, text_found = detect_text(img)
             cv2.imshow('CSI Camera', display_img)
             
@@ -114,7 +165,10 @@ def show_camera():
             # Stop the program on the ESC key
             if keyCode == 27:
                 break
-            elif keyCode == 10:
+            elif keyCode == 13 or keyCode == 10:
+                if last_frame is not None:
+                    capture_frame_and_print_text(last_frame)
+            elif keyCode == ord('r'):
                 max_index = 10
                 max_value = 0.0
                 last_value = 0.0
