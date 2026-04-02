@@ -1,52 +1,77 @@
-import cv2, easyocr, time
+import cv2
+import easyocr
 import pandas as pd
+import re
 
-# --- CONFIGURATION ---
-EXCEL_FILE = 'production_list.xlsx'
-COLUMN_NAME = 'PlaqueText'  # Change this to match your spreadsheet column
+EXCEL_FILE = 'orders.xlsx'
 SENSOR_ID = 0
 
-# Initialize OCR (English, using GPU)
-print("Loading AI Models (GPU)...")
+print("Loading OCR...")
 reader = easyocr.Reader(['en'], gpu=True)
 
-# GStreamer Pipeline for high-res IMX219
+# Load spreadsheet once
+df = pd.read_excel(EXCEL_FILE)
+
 def get_pipeline():
     return (
         f"nvarguscamerasrc sensor-id={SENSOR_ID} ! "
-        "video/x-raw(memory:NVMM), width=3280, height=2464, framerate=21/1 ! "
+        "video/x-raw(memory:NVMM), width=1920, height=1080, framerate=30/1 ! "
         "nvvidconv ! video/x-raw, format=BGRx ! "
         "videoconvert ! video/x-raw, format=BGR ! appsink"
     )
 
-def capture_and_check():
-    # 1. Load Spreadsheet
-    df = pd.read_excel(EXCEL_FILE)
-    
-    # 2. Capture Image
+def extract_order_id(text):
+    # Looks for 4-digit numbers like 1001, 1002
+    match = re.search(r'\b\d{4}\b', text)
+    return match.group(0) if match else None
+
+def check_plaque():
     cap = cv2.VideoCapture(get_pipeline(), cv2.CAP_GSTREAMER)
     ret, frame = cap.read()
     cap.release()
-    
+
     if not ret:
-        print("Failed to capture image")
+        print("Camera capture failed")
         return
 
-    # 3. Run OCR
-    print("Scanning Plaque...")
+    print("Running OCR...")
     results = reader.readtext(frame)
-    detected_text = " ".join([res[1] for res in results]).upper()
-    print(f"Detected: {detected_text}")
+    detected_text = " ".join([r[1] for r in results]).upper()
 
-    # 4. Match Logic
-    # We check if any row in the spreadsheet is contained within the detected text
-    match = df[df[COLUMN_NAME].apply(lambda x: str(x).upper() in detected_text)]
+    print(f"Detected:\n{detected_text}\n")
 
-    if not match.empty:
-        print("PASS: Match found in spreadsheet!")
-        # Here you can add the UPS label check logic next
+    # --- Try Order ID first ---
+    order_id = extract_order_id(detected_text)
+
+    if order_id:
+        print(f"Found Order ID: {order_id}")
+        match = df[df['Order ID'] == int(order_id)]
+
+        if not match.empty:
+            row = match.iloc[0]
+            print("PASS: Order found in spreadsheet")
+
+            # Optional deeper checks
+            name = row['Name'].upper()
+            if name in detected_text:
+                print("Name matches")
+            else:
+                print("Name mismatch")
+
+        else:
+            print("FAIL: Order ID not found")
+
     else:
-        print("FAIL: No match found!")
+        print("No Order ID found — trying Name match")
+
+        # fallback: match by name
+        for _, row in df.iterrows():
+            name = str(row['Name']).upper()
+            if name in detected_text:
+                print(f"PASS: Found match for {name}")
+                return
+
+        print("FAIL: No match found")
 
 if __name__ == "__main__":
-    capture_and_check()
+    check_plaque()
