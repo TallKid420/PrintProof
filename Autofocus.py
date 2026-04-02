@@ -26,7 +26,7 @@ def detect_text(img):
     """Detect text regions in the image using MSER.
     Returns annotated image and True if text-like regions are found."""
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    mser = cv2.MSER_create(_delta=5, _min_area=60, _max_area=2600)
+    mser = cv2.MSER_create(5, 60, 2600)
     regions, _ = mser.detectRegions(gray)
 
     text_found = False
