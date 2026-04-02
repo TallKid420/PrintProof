@@ -29,10 +29,11 @@ print("EasyOCR ready.")
 def gstreamer_pipeline(width, height, fps):
     return (
         f"nvarguscamerasrc sensor-id={SENSOR_ID} "
-        "exposuretimerange=\"10000000 80000000\" "
-        "gainrange=\"1 4\" "
-        "ispdigitalgainrange=\"1 1\" "
-        "wbmode=1 ! "
+        "wbmode=1 "
+        "intent=3 "
+        "exposuretimerange=\"1000000 80000000\" "
+        "gainrange=\"1 16\" "
+        "ispdigitalgainrange=\"1 8\" ! "
         f"video/x-raw(memory:NVMM), width={width}, height={height}, framerate={fps}/1 ! "
         "nvvidconv ! video/x-raw, format=BGRx ! "
         "videoconvert ! video/x-raw, format=BGR ! "
