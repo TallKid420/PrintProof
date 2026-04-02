@@ -2,30 +2,31 @@ import cv2
 import pandas as pd
 import re
 import easyocr
+import numpy as np
 
 # --- CONFIGURATION ---
-EXCEL_FILE = "orders.xlsx"
-SENSOR_ID = 0
-FLIP_X = True        # Flip horizontally (mirror)
-FLIP_Y = True        # Flip vertically (upside down)
-USE_GPU = False      # Set True later once GPU is fixed
+EXCEL_FILE   = "orders.xlsx"
+SENSOR_ID    = 0
+FLIP_X       = True   # Flip horizontally (mirror)
+FLIP_Y       = True   # Flip vertically (upside down)
+USE_GPU      = False  # Set True once GPU/PyTorch is fixed
 
-# --- PREVIEW vs CAPTURE RESOLUTION ---
-PREVIEW_WIDTH  = 1280
-PREVIEW_HEIGHT = 720
-CAPTURE_WIDTH  = 3280
-CAPTURE_HEIGHT = 2464
-CAPTURE_FPS    = 21
+# --- RESOLUTION ---
+PREVIEW_WIDTH   = 1280
+PREVIEW_HEIGHT  = 720
+CAPTURE_WIDTH   = 3280
+CAPTURE_HEIGHT  = 2464
+CAPTURE_FPS     = 21
 
 # --- INIT OCR (once at startup) ---
-print("🌀 Loading EasyOCR...")
+print("Loading EasyOCR...")
 reader = easyocr.Reader(['en'], gpu=USE_GPU)
-print("✅ EasyOCR ready.")
+print("EasyOCR ready.")
 
 # ─────────────────────────────────────────
 # PIPELINE
 # ─────────────────────────────────────────
-def gstreamer_pipeline(width=1280, height=720, fps=30):
+def gstreamer_pipeline(width, height, fps):
     return (
         f"nvarguscamerasrc sensor-id={SENSOR_ID} "
         "exposuretimerange=\"10000000 80000000\" "
@@ -34,7 +35,8 @@ def gstreamer_pipeline(width=1280, height=720, fps=30):
         "wbmode=1 ! "
         f"video/x-raw(memory:NVMM), width={width}, height={height}, framerate={fps}/1 ! "
         "nvvidconv ! video/x-raw, format=BGRx ! "
-        "videoconvert ! video/x-raw, format=BGR ! appsink drop=true sync=false"
+        "videoconvert ! video/x-raw, format=BGR ! "
+        "appsink drop=true max-buffers=1 sync=false"
     )
 
 # ─────────────────────────────────────────
@@ -50,93 +52,90 @@ def apply_flip(frame):
     return frame
 
 # ─────────────────────────────────────────
-# PREVIEW (low res) → CAPTURE (full res)
+# OPEN CAMERA (with retries)
 # ─────────────────────────────────────────
-def live_preview_and_capture():
-    print("📷 Live preview started.")
-    print("   → Press ENTER to capture at full resolution.")
-    print("   → Press Q to quit.")
-
-    # Open preview stream
-    preview_cap = cv2.VideoCapture(
-        gstreamer_pipeline(PREVIEW_WIDTH, PREVIEW_HEIGHT, 30),
-        cv2.CAP_GSTREAMER
+def open_camera(width, height, fps, retries=3):
+    pipeline = gstreamer_pipeline(width, height, fps)
+    for attempt in range(1, retries + 1):
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            return cap
+        cap.release()
+        print(f"Camera open attempt {attempt}/{retries} failed, retrying...")
+    raise RuntimeError(
+        f"Cannot open camera pipeline after {retries} attempts.\n"
+        f"Pipeline: {pipeline}\n"
+        "Check: camera connected? nvarguscamerasrc available? Another process using camera?"
     )
 
-    if not preview_cap.isOpened():
-        raise RuntimeError("Cannot open preview pipeline.")
+# ─────────────────────────────────────────
+# PREVIEW + CAPTURE
+# ─────────────────────────────────────────
+def live_preview_and_capture():
+    print("Starting live preview...")
+    print("  Press ENTER to capture at full resolution.")
+    print("  Press Q to quit.")
 
-    capture_frame = None
+    cap = open_camera(PREVIEW_WIDTH, PREVIEW_HEIGHT, 30)
+    captured = None
 
     while True:
-        ret, f = preview_cap.read()
+        ret, f = cap.read()
         if not ret or f is None:
-            print("⚠️ Frame drop, retrying...")
+            print("Frame drop, retrying...")
             continue
 
         f = apply_flip(f)
         cv2.imshow("PrintProof - ENTER to capture | Q to quit", f)
-
         key = cv2.waitKey(1) & 0xFF
 
         if key == 13:  # ENTER
-            print("📸 Capturing full resolution image...")
-            preview_cap.release()
+            cap.release()
             cv2.destroyAllWindows()
+            print("Capturing full resolution image...")
 
-            # Open a NEW high-res capture
-            capture_cap = cv2.VideoCapture(
-                gstreamer_pipeline(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS),
-                cv2.CAP_GSTREAMER
-            )
+            cap_hires = open_camera(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS)
 
-            if not capture_cap.isOpened():
-                raise RuntimeError("Cannot open full-res capture pipeline.")
-
-            # Discard first few frames (camera needs to settle)
+            # Discard first few frames so camera settles
             for _ in range(5):
-                capture_cap.read()
+                cap_hires.read()
 
-            ret2, full_frame = capture_cap.read()
-            capture_cap.release()
+            ret2, full_frame = cap_hires.read()
+            cap_hires.release()
 
             if not ret2 or full_frame is None:
                 raise RuntimeError("Full-res capture failed.")
 
             full_frame = apply_flip(full_frame)
             cv2.imwrite("last_capture.jpg", full_frame)
-            print("✅ Full-res image captured and saved as last_capture.jpg")
-            capture_frame = full_frame
+            print("Captured and saved as last_capture.jpg")
+            captured = full_frame
             break
 
         elif key in (ord('q'), ord('Q')):
-            print("❌ Cancelled.")
-            preview_cap.release()
+            print("Cancelled.")
+            cap.release()
             cv2.destroyAllWindows()
             break
 
-    if capture_frame is None:
+    if captured is None:
         raise RuntimeError("No image captured.")
-
-    return capture_frame
+    return captured
 
 # ─────────────────────────────────────────
 # OCR
 # ─────────────────────────────────────────
 def ocr_text(img_bgr):
-    # Upscale 2x → helps EasyOCR read small text
     h, w = img_bgr.shape[:2]
     img_big = cv2.resize(img_bgr, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
 
     results = reader.readtext(img_big)
 
-    # Print each detected block with confidence
     print("\n--- RAW OCR BLOCKS ---")
     for (bbox, text, conf) in results:
         print(f"  [{conf:.2f}] {text}")
     print("----------------------\n")
 
-    # Combine all text
     full_text = " ".join([res[1] for res in results])
     full_text = re.sub(r"\s+", " ", full_text).strip()
     return full_text
@@ -151,59 +150,50 @@ def extract_order_id(text):
 def match_against_spreadsheet(text, df):
     text_u = text.upper()
 
-    # --- Try Order ID first ---
     oid = extract_order_id(text_u)
     if oid is not None:
-        print(f"🔢 Detected Order ID: {oid}")
+        print(f"Detected Order ID: {oid}")
         match = df[df["Order ID"] == oid]
         if not match.empty:
             row = match.iloc[0]
-            print("✅ PASS: Order ID matched!")
-            print(f"   Name:    {row['Name']}")
-            print(f"   Title:   {row['Title']}")
-            print(f"   Address: {row['Address']}, {row['City']}, {row['State']} {row['ZIP']}")
+            print("PASS: Order ID matched!")
+            print(f"  Name:    {row['Name']}")
+            print(f"  Title:   {row['Title']}")
+            print(f"  Address: {row['Address']}, {row['City']}, {row['State']} {row['ZIP']}")
             return True, row
         else:
-            print(f"❌ FAIL: Order ID {oid} not found in spreadsheet.")
+            print(f"FAIL: Order ID {oid} not found in spreadsheet.")
             return False, None
 
-    # --- Fallback: Name match ---
-    print("⚠️ No Order ID found — trying Name match...")
+    print("No Order ID found -- trying Name match...")
     for _, row in df.iterrows():
         name = str(row["Name"]).upper()
         if name and name in text_u:
-            print(f"✅ PASS: Name matched → {row['Name']}")
+            print(f"PASS: Name matched -> {row['Name']}")
             return True, row
 
-    print("❌ FAIL: No Order ID or Name match found.")
+    print("FAIL: No Order ID or Name match found.")
     return False, None
 
 # ─────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────
 def main():
-    print("📂 Loading spreadsheet...")
+    print("Loading spreadsheet...")
     df = pd.read_excel(EXCEL_FILE)
-    print(f"   Loaded {len(df)} orders.\n")
+    print(f"Loaded {len(df)} orders.\n")
 
-    # Step 1: Preview + Capture
     frame = live_preview_and_capture()
 
-    # Step 2: OCR
-    print("🔍 Running OCR on captured image...")
+    print("Running OCR on captured image...")
     text = ocr_text(frame)
-    print(f"📝 Full detected text:\n{text}\n")
+    print(f"Full detected text:\n{text}\n")
 
-    # Step 3: Match
     passed, matched_row = match_against_spreadsheet(text, df)
 
-    # Step 4: Final result
-    print("\n" + "="*40)
-    if passed:
-        print("✅  RESULT: PASS")
-    else:
-        print("❌  RESULT: FAIL")
-    print("="*40 + "\n")
+    print("\n" + "=" * 40)
+    print("RESULT: PASS" if passed else "RESULT: FAIL")
+    print("=" * 40 + "\n")
 
 if __name__ == "__main__":
     main()
