@@ -24,9 +24,9 @@ CAPTURE_FPS = 21
 
 # Autofocus settings
 AUTOFOCUS_ENABLED = True
-I2C_BUS = 1                  # usually 1 on Jetson camera connector
-FOCUS_I2C_ADDR_CANDIDATES = [0x0c, 0x0d, 0x18]  # common candidates for Arducam focus boards
-AUTOFOCUS_SLEEP_SEC = 1.5    # give motor time to move
+I2C_BUS = 1        # camera connector on Jetson is bus 1
+FOCUS_ADDR = 0x30  # DW9714/DW9807 VCM driver (confirmed via i2cdetect)
+AF_STEPS = 16      # number of positions to sweep (higher = slower but more accurate)
 
 
 print("Loading EasyOCR...")
@@ -89,29 +89,29 @@ def _have_cmd(cmd):
     return shutil.which(cmd) is not None
 
 
-def _i2c_addr_present(bus, addr_hex):
-    # Returns True if i2cdetect shows a device at addr
-    # Requires i2c-tools installed.
-    try:
-        out = os.popen(f"i2cdetect -y {bus}").read()
-        # i2cdetect prints address in hex without 0x prefix (e.g. "0c")
-        return f"{addr_hex:02x}" in out.lower()
-    except Exception:
-        return False
+def _vcm_set_position(pos):
+    """
+    Write a 10-bit position (0-1023) to DW9714/DW9807 VCM at FOCUS_ADDR.
+    0 = infinity (far), 1023 = macro (close).
+    """
+    pos = max(0, min(1023, pos))
+    byte0 = (pos >> 4) & 0x3F
+    byte1 = (pos & 0x0F) << 4
+    os.system(f"i2cset -y {I2C_BUS} 0x{FOCUS_ADDR:02x} 0x{byte0:02x} 0x{byte1:02x}")
 
 
-def find_focus_addr():
-    # Best effort: if i2c-tools exist, scan for known candidates
-    if not _have_cmd("i2cdetect"):
-        return None
-
-    for addr in FOCUS_I2C_ADDR_CANDIDATES:
-        if _i2c_addr_present(I2C_BUS, addr):
-            return addr
-    return None
+def _sharpness(frame):
+    """Laplacian variance: higher = sharper/more in-focus."""
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
-def trigger_autofocus():
+def trigger_autofocus(preview_cap=None):
+    """
+    Sweep VCM from far (0) to near (1023) in AF_STEPS steps.
+    Score each frame for sharpness, then lock to the best position.
+    Pass preview_cap so we can read live frames during the sweep.
+    """
     if not AUTOFOCUS_ENABLED:
         return
 
@@ -119,18 +119,29 @@ def trigger_autofocus():
         print("Autofocus skipped: i2cset not installed (sudo apt install i2c-tools)")
         return
 
-    addr = find_focus_addr()
-    if addr is None:
-        # Fall back to 0x0c if we cannot detect
-        addr = 0x0c
+    print(f"Autofocus: sweeping lens ({AF_STEPS} steps)...")
 
-    # NOTE: This sequence is device-specific. If your board ignores it,
-    # we can switch to a different register sequence once you confirm the focus module model.
-    print(f"Autofocus: triggering focus motor on i2c bus {I2C_BUS}, addr 0x{addr:02x}")
-    rc = os.system(f"i2cset -y {I2C_BUS} 0x{addr:02x} 0x01 0x00")
-    if rc != 0:
-        print("Autofocus command returned non-zero (may not be supported on this focus module).")
-    time.sleep(AUTOFOCUS_SLEEP_SEC)
+    step_size = 1024 // AF_STEPS
+    positions = list(range(0, 1024, step_size))
+    best_pos = positions[0]
+    best_score = -1.0
+
+    for pos in positions:
+        _vcm_set_position(pos)
+        time.sleep(0.08)  # let motor settle
+
+        if preview_cap is not None and preview_cap.isOpened():
+            ret, frame = preview_cap.read()
+            if ret and frame is not None:
+                score = _sharpness(frame)
+                print(f"  pos={pos:4d}  sharpness={score:.1f}")
+                if score > best_score:
+                    best_score = score
+                    best_pos = pos
+
+    print(f"Autofocus: locked at position={best_pos} (sharpness={best_score:.1f})")
+    _vcm_set_position(best_pos)
+    time.sleep(0.15)
 
 
 def live_preview_and_capture():
@@ -153,11 +164,11 @@ def live_preview_and_capture():
         key = cv2.waitKey(1) & 0xFF
 
         if key == 13:  # Enter
+            print("Autofocusing...")
+            trigger_autofocus(preview_cap=cap)  # sweep while preview stream is still open
+
             cap.release()
             cv2.destroyAllWindows()
-
-            # Trigger autofocus right before high-res capture
-            trigger_autofocus()
 
             print("Capturing full resolution image...")
             cap_hires = open_camera(CAPTURE_WIDTH, CAPTURE_HEIGHT, CAPTURE_FPS)
