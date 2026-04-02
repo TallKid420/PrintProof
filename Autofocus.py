@@ -1,12 +1,9 @@
 import cv2
 import os
-import json
 import re
 import shutil
 import subprocess
 import tempfile
-import urllib.error
-import urllib.request
 from Focuser import Focuser
 
 focuser = None
@@ -126,32 +123,10 @@ def format_text(text):
     return re.sub(r'[ \t]+', ' ', '\n\n'.join(paragraphs)).strip()
 
 
-def cleanup_with_ollama(text, model):
-    prompt = (
-        'Clean this OCR output into readable text. Repair broken words and line wraps, '
-        'but do not add facts or rewrite meaning. Preserve paragraph breaks when clear.\n\n'
-        + text
-    )
-    request = urllib.request.Request(
-        'http://127.0.0.1:11434/api/generate',
-        data=json.dumps({'model': model, 'prompt': prompt, 'stream': False}).encode('utf-8'),
-        headers={'Content-Type': 'application/json'},
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=20) as response:
-            payload = json.loads(response.read().decode('utf-8'))
-            return payload.get('response', '').strip()
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return text
-
-
-def process_capture(img, ollama_model=None):
+def process_capture(img):
     processed = preprocess_text_image(img)
     annotated, text_found = detect_text(img, processed=processed)
     extracted_text = format_text(extract_text(processed))
-
-    if extracted_text and ollama_model:
-        extracted_text = cleanup_with_ollama(extracted_text, ollama_model)
 
     return annotated, processed, text_found, extracted_text
 
@@ -179,7 +154,7 @@ def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=64
     'videoconvert ! '
     'video/x-raw, format=(string)BGR ! appsink'  % (capture_width,capture_height,framerate,flip_method,display_width,display_height))
 
-def show_camera(ollama_model=None):
+def show_camera():
     max_index = 10
     max_value = 0.0
     last_value = 0.0
@@ -226,13 +201,13 @@ def show_camera(ollama_model=None):
             if keyCode == 27:
                 break
             elif keyCode in (10, 13):
-                annotated, processed, text_found, extracted_text = process_capture(img, ollama_model=ollama_model)
+                annotated, processed, text_found, extracted_text = process_capture(img)
                 cv2.imshow('Processed Text', annotated)
                 cv2.imshow('Processed Mask', processed)
                 if extracted_text:
                     print('\nCaptured text:\n{}\n'.format(extracted_text))
                 elif text_found:
-                    print('\nText-like regions found, but no OCR engine is available. Install pytesseract or tesseract, or pass --ollama-model after OCR is available.\n')
+                    print('\nText-like regions found, but no OCR engine is available. Install pytesseract or tesseract.\n')
                 else:
                     print('\nNo text detected in the captured frame.\n')
             elif keyCode in (ord('r'), ord('R')):
