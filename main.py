@@ -4,7 +4,14 @@ import re
 import os
 import time
 import shutil
+import subprocess
 import easyocr
+
+try:
+    import smbus2
+    _SMBUS_OK = True
+except ImportError:
+    _SMBUS_OK = False
 
 # --- CONFIGURATION ---
 EXCEL_FILE = "orders.xlsx"
@@ -93,11 +100,26 @@ def _vcm_set_position(pos):
     """
     Write a 10-bit position (0-1023) to DW9714/DW9807 VCM at FOCUS_ADDR.
     0 = infinity (far), 1023 = macro (close).
+    Tries smbus2 first (no sudo needed), falls back to i2cset subprocess.
     """
     pos = max(0, min(1023, pos))
     byte0 = (pos >> 4) & 0x3F
     byte1 = (pos & 0x0F) << 4
-    os.system(f"i2cset -y {I2C_BUS} 0x{FOCUS_ADDR:02x} 0x{byte0:02x} 0x{byte1:02x}")
+
+    if _SMBUS_OK:
+        try:
+            with smbus2.SMBus(I2C_BUS) as bus:
+                bus.write_byte_data(FOCUS_ADDR, byte0, byte1)
+            return
+        except Exception as e:
+            print(f"  smbus2 write failed (pos={pos}): {e}")
+
+    # Fallback: subprocess i2cset with full error capture
+    cmd = ["sudo", "i2cset", "-y", str(I2C_BUS),
+           f"0x{FOCUS_ADDR:02x}", f"0x{byte0:02x}", f"0x{byte1:02x}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  i2cset write failed (pos={pos}): {result.stderr.strip()}")
 
 
 def _sharpness(frame):
