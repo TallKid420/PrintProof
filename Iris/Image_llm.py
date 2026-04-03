@@ -7,6 +7,12 @@ import groq
 
 OLLAMA_URL = 'http://127.0.0.1:11434/api/generate'
 MODEL = 'gemma3:4b'
+USE_GROQ = False
+
+
+def set_use_groq(enabled: bool):
+    global USE_GROQ
+    USE_GROQ = bool(enabled)
 
 
 def _encode_image(image_path: str) -> str:
@@ -33,14 +39,12 @@ def _call_ollama(prompt: str, image_path: str = None) -> str:
 
 
 def _call_model(prompt: str, image_path: str = None) -> str:
-    result = _call_ollama(prompt, image_path)
-    if result:
-        return result
+    if USE_GROQ:
+        if image_path:
+            return groq.ProcessImage(image_path, prompt)
+        return groq.ProcessText(prompt)
 
-    print('Falling back to Groq API...')
-    if image_path:
-        return groq.ProcessImage(image_path, prompt)
-    return groq.ProcessText(prompt)
+    return _call_ollama(prompt, image_path)
 
 
 def ProcessImage(image_path: str, orders: dict) -> str:

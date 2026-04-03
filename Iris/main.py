@@ -158,6 +158,8 @@ def parse_cmdline():
                         help='Set i2c bus (A02=6, B01=7/8, Xavier NX=9/10)')
     parser.add_argument('--debug', action='store_true',
                         help='Print focus write operations for debugging')
+    parser.add_argument('--use-groq', action='store_true',
+                        help='Use Groq instead of Ollama')
     return parser.parse_args()
 
 
@@ -309,5 +311,7 @@ def run_terminal(args, orders):
 if __name__ == '__main__':
     setup_logging()
     args = parse_cmdline()
+    Image_llm.set_use_groq(args.use_groq)
+    print('Model provider: {}'.format('Groq' if args.use_groq else 'Ollama'))
     orders = None
     run_terminal(args, orders)
