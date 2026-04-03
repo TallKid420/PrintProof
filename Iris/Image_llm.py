@@ -30,16 +30,32 @@ def _call_ollama(prompt: str, image_path: str = None) -> str:
         return ''
 
 
-def ProcessImage(image_path: str) -> str:
-    """Send image directly to Gemma3:4b — no OCR, LLM reads the text itself."""
+def ProcessImage(image_path: str, orders: dict) -> str:
+    """Read image text and verify it against expected product rows."""
+    product_rows = []
+    if orders and isinstance(orders, dict):
+        product_rows = orders.get('product') or []
+
+    expected_products = [
+        {
+            'name': row.get('name'),
+            'title': row.get('title'),
+            'date': row.get('date'),
+        }
+        for row in product_rows if isinstance(row, dict)
+    ]
+
     prompt = (
-        'Read all text visible in this image exactly as it appears. '
-        'Preserve paragraph breaks and line structure. '
-        'Do not summarize, interpret, or add anything not visible in the image.'
+        'Read all visible text from this image and compare it to EXPECTED_PRODUCTS. '
+        'Return strict JSON only with keys: extracted_text, matches, unmatched_expected. '
+        'Each matches item must include: order_id, title, matched, confidence, reason. '
+        'Do not include markdown fences.\n\n'
+        'EXPECTED_PRODUCTS:\n'
+        + json.dumps(expected_products, ensure_ascii=True, default=str)
     )
     result = _call_ollama(prompt, image_path)
     if result:
-        print('\nLLM extracted text:\n{}\n'.format(result))
+        print('\nLLM image verification:\n{}\n'.format(result))
     return result
 
 
