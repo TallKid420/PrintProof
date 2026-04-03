@@ -1,12 +1,12 @@
 # PrintProof dependencies
 # Install with: pip3 install --user -r requirements.txt
-# IMPORTANT: numpy must be <2 due to EasyOCR/OpenCV compatibility on Jetson
-numpy<2
-easyocr
-pandas
-openpyxl
-Pillow
 
-# opencv-python is NOT listed here intentionally.
-# Use the system-installed version: sudo apt install python3-opencv
-# pip opencv breaks GStreamer camera support on Jetson.
+# Required for Excel batch parsing
+openpyxl
+
+# Optional OCR-only extras
+pytesseract
+
+# OpenCV is intentionally not listed here.
+# On Jetson, use system package for GStreamer camera support:
+#   sudo apt install python3-opencv
