@@ -7,22 +7,20 @@ import tempfile
 from Focuser import Focuser
 
 focuser = None
+
+
 def focusing(val):
-	# value = (val << 4) & 0x3ff0
-	# data1 = (value >> 8) & 0x3f
-	# data2 = value & 0xf0
-	# os.system("i2cset -y 6 0x0c %d %d" % (data1,data2))
     focuser.set(Focuser.OPT_FOCUS, val)
-	
+
+
 def sobel(img):
-	img_gray = cv2.cvtColor(img,cv2.COLOR_RGB2GRAY)
-	img_sobel = cv2.Sobel(img_gray,cv2.CV_16U,1,1)
-	return cv2.mean(img_sobel)[0]
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.mean(cv2.Sobel(gray, cv2.CV_16U, 1, 1))[0]
+
 
 def laplacian(img):
-	img_gray = cv2.cvtColor(img,cv2.COLOR_RGB2GRAY)
-	img_sobel = cv2.Laplacian(img_gray,cv2.CV_16U)
-	return cv2.mean(img_sobel)[0]
+    gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    return cv2.mean(cv2.Laplacian(gray, cv2.CV_16U))[0]
 
 
 def preprocess_text_image(img):
@@ -139,86 +137,84 @@ def overlay_preview_status(img, focus_finished):
     return preview
 
 
-# gstreamer_pipeline returns a GStreamer pipeline for capturing from the CSI camera
-# Defaults to 1280x720 @ 60fps 
-# Flip the image by setting the flip_method (most common values: 0 and 2)
-# display_width and display_height determine the size of the window on the screen
+def gstreamer_pipeline(
+    capture_width=1280, capture_height=720,
+    display_width=640, display_height=360,
+    framerate=60, flip_method=0,
+):
+    return (
+        'nvarguscamerasrc ! '
+        'video/x-raw(memory:NVMM), '
+        'width=(int)%d, height=(int)%d, '
+        'format=(string)NV12, framerate=(fraction)%d/1 ! '
+        'nvvidconv flip-method=%d ! '
+        'video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! '
+        'videoconvert ! '
+        'video/x-raw, format=(string)BGR ! appsink'
+        % (capture_width, capture_height, framerate, flip_method, display_width, display_height)
+    )
 
-def gstreamer_pipeline (capture_width=1280, capture_height=720, display_width=640, display_height=360, framerate=60, flip_method=0) :   
-    return ('nvarguscamerasrc ! ' 
-    'video/x-raw(memory:NVMM), '
-    'width=(int)%d, height=(int)%d, '
-    'format=(string)NV12, framerate=(fraction)%d/1 ! '
-    'nvvidconv flip-method=%d ! '
-    'video/x-raw, width=(int)%d, height=(int)%d, format=(string)BGRx ! '
-    'videoconvert ! '
-    'video/x-raw, format=(string)BGR ! appsink'  % (capture_width,capture_height,framerate,flip_method,display_width,display_height))
+def _reset_autofocus():
+    return dict(max_index=10, max_value=0.0, last_value=0.0,
+                dec_count=0, focal_distance=10, focus_finished=False)
 
-def show_camera():
-    max_index = 10
-    max_value = 0.0
-    last_value = 0.0
-    dec_count = 0
-    focal_distance = 10
-    focus_finished = False
-    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
-    focusing(focal_distance)
+
+def show_camera(on_capture=None):
+    af = _reset_autofocus()
     skip_frame = 2
-    if cap.isOpened():
-        cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
-        while cv2.getWindowProperty('CSI Camera',0) >= 0:
-            ret_val, img = cap.read()
-            if not ret_val:
-                continue
 
-            img = cv2.flip(img, -1)
-            cv2.imshow('CSI Camera', overlay_preview_status(img, focus_finished))
-            
-            if skip_frame == 0:
-                skip_frame = 2
-                if dec_count < 6 and focal_distance < 1000:
-                    focusing(focal_distance)
-                    val = laplacian(img)
-                    if val > max_value:
-                        max_index = focal_distance
-                        max_value = val
-                        
-                    if val < last_value:
-                        dec_count += 1
-                    else:
-                        dec_count = 0
-                    if dec_count < 6:
-                        last_value = val
-                        focal_distance += 10
-
-                elif not focus_finished:
-                    focusing(max_index)
-                    focus_finished = True
-            else:
-                skip_frame = skip_frame - 1
-
-            keyCode = cv2.waitKey(1) & 0xff
-            if keyCode == 27:
-                break
-            elif keyCode in (10, 13):
-                annotated, processed, text_found, extracted_text = process_capture(img)
-                cv2.imshow('Processed Text', annotated)
-                cv2.imshow('Processed Mask', processed)
-                if extracted_text:
-                    print('\nCaptured text:\n{}\n'.format(extracted_text))
-                elif text_found:
-                    print('\nText-like regions found, but no OCR engine is available. Install pytesseract or tesseract.\n')
-                else:
-                    print('\nNo text detected in the captured frame.\n')
-            elif keyCode in (ord('r'), ord('R')):
-                max_index = 10
-                max_value = 0.0
-                last_value = 0.0
-                dec_count = 0
-                focal_distance = 10
-                focus_finished = False
-                focusing(focal_distance)
-        cap.release()
-        cv2.destroyAllWindows()
-    else:
+    cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
+    if not cap.isOpened():
         print('Unable to open camera')
+        return
+
+    focusing(af['focal_distance'])
+    cv2.namedWindow('CSI Camera', cv2.WINDOW_AUTOSIZE)
+
+    while cv2.getWindowProperty('CSI Camera', 0) >= 0:
+        ret_val, img = cap.read()
+        if not ret_val:
+            continue
+
+        img = cv2.flip(img, -1)
+        cv2.imshow('CSI Camera', overlay_preview_status(img, af['focus_finished']))
+
+        if skip_frame == 0:
+            skip_frame = 2
+            if af['dec_count'] < 6 and af['focal_distance'] < 1000:
+                focusing(af['focal_distance'])
+                val = laplacian(img)
+                if val > af['max_value']:
+                    af['max_index'] = af['focal_distance']
+                    af['max_value'] = val
+                if val < af['last_value']:
+                    af['dec_count'] += 1
+                else:
+                    af['dec_count'] = 0
+                if af['dec_count'] < 6:
+                    af['last_value'] = val
+                    af['focal_distance'] += 10
+            elif not af['focus_finished']:
+                focusing(af['max_index'])
+                af['focus_finished'] = True
+        else:
+            skip_frame -= 1
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == 27:
+            break
+        elif key in (10, 13):
+            annotated, processed, text_found, extracted_text = process_capture(img)
+            cv2.imshow('Processed Text', annotated)
+            cv2.imshow('Processed Mask', processed)
+            if on_capture:
+                with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
+                    image_path = tmp.name
+                cv2.imwrite(image_path, img)
+                on_capture(text_found, extracted_text, image_path)
+        elif key in (ord('r'), ord('R')):
+            af = _reset_autofocus()
+            focusing(af['focal_distance'])
+
+    cap.release()
+    cv2.destroyAllWindows()

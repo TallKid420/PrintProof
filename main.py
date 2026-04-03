@@ -1,6 +1,10 @@
 import argparse
+from functools import partial
+
+import Image_llm
 from Autofocus import show_camera
 from Focuser import Focuser
+
 
 def parse_cmdline():
     parser = argparse.ArgumentParser()
@@ -10,8 +14,22 @@ def parse_cmdline():
                         help='Print focus write operations for debugging')
     return parser.parse_args()
 
+
+def handle_capture(text_found, extracted_text, image_path, debug=False):
+    if extracted_text:
+        if debug:
+            print('\nCaptured text:\n{}\n'.format(extracted_text))
+        Image_llm.ProcessImage(image_path)
+        return
+
+    if text_found:
+        print('\nText-like regions found, but no OCR engine is available. Install pytesseract or tesseract.\n')
+    else:
+        print('\nNo text detected in the captured frame.\n')
+
+
 if __name__ == '__main__':
     args = parse_cmdline()
     import Autofocus
     Autofocus.focuser = Focuser(args.i2c_bus, debug=args.debug)
-    show_camera()
+    show_camera(on_capture=partial(handle_capture, debug=args.debug))
