@@ -3,6 +3,8 @@ import json
 import urllib.error
 import urllib.request
 
+import groq
+
 OLLAMA_URL = 'http://127.0.0.1:11434/api/generate'
 MODEL = 'gemma3:4b'
 
@@ -30,6 +32,17 @@ def _call_ollama(prompt: str, image_path: str = None) -> str:
         return ''
 
 
+def _call_model(prompt: str, image_path: str = None) -> str:
+    result = _call_ollama(prompt, image_path)
+    if result:
+        return result
+
+    print('Falling back to Groq API...')
+    if image_path:
+        return groq.ProcessImage(image_path, prompt)
+    return groq.ProcessText(prompt)
+
+
 def ProcessImage(image_path: str, orders: dict) -> str:
     """Read image text and verify it against expected product rows."""
     product_rows = []
@@ -48,12 +61,12 @@ def ProcessImage(image_path: str, orders: dict) -> str:
     prompt = (
         'Read all visible text from this image and compare it to EXPECTED_PRODUCTS. '
         'Return strict JSON only with keys: extracted_text, matches, unmatched_expected. '
-        'Each matches item must include: order_id, title, matched, confidence, reason. '
+        'Each matches item must include: title, matched, confidence, reason. '
         'Do not include markdown fences.\n\n'
         'EXPECTED_PRODUCTS:\n'
         + json.dumps(expected_products, ensure_ascii=True, default=str)
     )
-    result = _call_ollama(prompt, image_path)
+    result = _call_model(prompt, image_path)
     if result:
         print('\nLLM image verification:\n{}\n'.format(result))
     return result
@@ -67,7 +80,7 @@ def ProcessFracturedText(text: str) -> str:
         'Do not add information or rewrite meaning. '
         'Preserve paragraph breaks.\n\n' + text
     )
-    result = _call_ollama(prompt)
+    result = _call_model(prompt)
     if result:
         print('\nCleaned text:\n{}\n'.format(result))
     return result
@@ -80,7 +93,7 @@ def ProcessImageAndText(image_path: str, text: str) -> str:
         'Use the image to correct OCR errors and repair fractured or garbled text. '
         'Return the corrected, readable text only.\n\nOCR output:\n' + text
     )
-    result = _call_ollama(prompt, image_path)
+    result = _call_model(prompt, image_path)
     if result:
         print('\nLLM corrected text:\n{}\n'.format(result))
     return result
