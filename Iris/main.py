@@ -167,6 +167,34 @@ def handle_capture(image_path, orders=None):
     return result
 
 
+def _load_orders_source(source):
+    source_path = Path(source)
+    if source_path.suffix.lower() == '.xlsx':
+        return processExcel(source_path)
+    if source_path.suffix.lower() == '.json':
+        if source_path.is_absolute():
+            if not source_path.exists():
+                return None
+            with source_path.open('r', encoding='utf-8') as f:
+                payload = json.load(f)
+            orders = payload.get('orders', []) if isinstance(payload, dict) else []
+            _save_active_orders_json(
+                orders,
+                batch_name=source_path.name,
+                source_file=payload.get('source_file') if isinstance(payload, dict) else None,
+            )
+            product_rows, shipping_rows = _build_views(orders)
+            return {
+                'json_file': str(source_path),
+                'json_dir': str(source_path.parent),
+                'product': product_rows,
+                'shipping': shipping_rows,
+                'batch_name': source_path.name,
+            }
+        return loadBatch(source_path.name)
+    return None
+
+
 def run_terminal(args, orders):
     state = {
         'orders': orders or {'product': [], 'shipping': []},
@@ -193,7 +221,18 @@ def run_terminal(args, orders):
             break
 
         if cmd == 'help':
-            print('Commands: list, run <image_path>, runid <order_id> <image_path>, batch <orders.xlsx|orders.json>, camera, rerun, reload, quit')
+            print(
+                'Commands:\n'
+                '  help\n'
+                '  list\n'
+                '  batch <full_or_relative_file_path>\n'
+                '  run <image_path>\n'
+                '  runid <order_id> <image_path>\n'
+                '  camera\n'
+                '  rerun\n'
+                '  reload\n'
+                '  quit'
+            )
             continue
 
         if cmd == 'list':
@@ -205,7 +244,7 @@ def run_terminal(args, orders):
 
         if cmd == 'reload':
             if not state['batch_name']:
-                print('No active batch. Use: batch <orders.xlsx|orders.json>')
+                print('No active batch. Use: batch <path-to-orders.xlsx-or-json>')
                 continue
 
             loaded = loadBatch(state['batch_name'])
@@ -218,21 +257,13 @@ def run_terminal(args, orders):
 
         if cmd == 'batch' and len(parts) == 2:
             batch_input = parts[1]
-            batch_path = Path(batch_input)
-            if not batch_path.is_absolute():
-                batch_path = BATCH_DIR / batch_input
-
-            loaded = None
-            if batch_path.suffix.lower() == '.xlsx':
-                loaded = processExcel(batch_path)
-            elif batch_path.suffix.lower() == '.json':
-                loaded = loadBatch(batch_path.name)
-            else:
-                print('Batch command expects .xlsx or .json, e.g. batch orders.xlsx')
+            loaded = _load_orders_source(batch_input)
+            if Path(batch_input).suffix.lower() not in ('.xlsx', '.json'):
+                print('Batch command expects .xlsx or .json, e.g. batch ./path/to/orders.xlsx')
                 continue
 
             if not loaded:
-                print('Failed to load batch from: {}'.format(batch_path))
+                print('Failed to load batch from: {}'.format(batch_input))
                 continue
             state['orders'] = loaded
             state['batch_name'] = loaded.get('batch_name', state['batch_name'])
