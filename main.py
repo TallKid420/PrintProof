@@ -12,14 +12,20 @@ def parse_cmdline():
                         help='Set i2c bus (A02=6, B01=7/8, Xavier NX=9/10)')
     parser.add_argument('--debug', action='store_true',
                         help='Print focus write operations for debugging')
+    parser.add_argument('--llm-only', action='store_true',
+                        help='Skip OCR; send captured image directly to Gemma3:4b')
     return parser.parse_args()
 
 
-def handle_capture(text_found, extracted_text, image_path, debug=False):
+def handle_capture(text_found, extracted_text, image_path, debug=False, llm_only=False):
+    if llm_only:
+        Image_llm.ProcessImage(image_path)
+        return
+
     if extracted_text:
         if debug:
             print('\nCaptured text:\n{}\n'.format(extracted_text))
-        Image_llm.ProcessImage(image_path)
+        Image_llm.ProcessImageAndText(image_path, extracted_text)
         return
 
     if text_found:
@@ -32,4 +38,7 @@ if __name__ == '__main__':
     args = parse_cmdline()
     import Autofocus
     Autofocus.focuser = Focuser(args.i2c_bus, debug=args.debug)
-    show_camera(on_capture=partial(handle_capture, debug=args.debug))
+    show_camera(
+        on_capture=partial(handle_capture, debug=args.debug, llm_only=args.llm_only),
+        skip_ocr=args.llm_only,
+    )

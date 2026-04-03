@@ -166,7 +166,7 @@ def _reset_autofocus():
     }
 
 
-def show_camera(on_capture=None):
+def show_camera(on_capture=None, skip_ocr=False):
     af = _reset_autofocus()
 
     cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
@@ -213,14 +213,17 @@ def show_camera(on_capture=None):
         if key == 27:
             break
         elif key in (10, 13):
-            annotated, processed, text_found, extracted_text = process_capture(img)
-            cv2.imshow('Processed Text', annotated)
-            cv2.imshow('Processed Mask', processed)
             if on_capture:
                 with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
                     image_path = tmp.name
                 cv2.imwrite(image_path, img)
-                on_capture(text_found, extracted_text, image_path)
+                if skip_ocr:
+                    on_capture(False, '', image_path)
+                else:
+                    annotated, processed, text_found, extracted_text = process_capture(img)
+                    cv2.imshow('Processed Text', annotated)
+                    cv2.imshow('Processed Mask', processed)
+                    on_capture(text_found, extracted_text, image_path)
         elif key in (ord('r'), ord('R')):
             af = _reset_autofocus()
             focusing(af['focal_distance'])
