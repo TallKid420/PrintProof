@@ -20,7 +20,7 @@ def sobel(img):
 
 def laplacian(img):
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    return cv2.mean(cv2.Laplacian(gray, cv2.CV_16U))[0]
+    return cv2.Laplacian(gray, cv2.CV_64F).var()
 
 
 def preprocess_text_image(img):
@@ -155,13 +155,19 @@ def gstreamer_pipeline(
     )
 
 def _reset_autofocus():
-    return dict(max_index=10, max_value=0.0, last_value=0.0,
-                dec_count=0, focal_distance=10, focus_finished=False)
+    return {
+        'max_index': 10,
+        'max_value': -1.0,
+        'last_value': -1.0,
+        'dec_count': 0,
+        'focal_distance': 10,
+        'focus_finished': False,
+        'settle_frames': 3,
+    }
 
 
 def show_camera(on_capture=None):
     af = _reset_autofocus()
-    skip_frame = 2
 
     cap = cv2.VideoCapture(gstreamer_pipeline(flip_method=0), cv2.CAP_GSTREAMER)
     if not cap.isOpened():
@@ -179,26 +185,29 @@ def show_camera(on_capture=None):
         img = cv2.flip(img, -1)
         cv2.imshow('CSI Camera', overlay_preview_status(img, af['focus_finished']))
 
-        if skip_frame == 0:
-            skip_frame = 2
-            if af['dec_count'] < 6 and af['focal_distance'] < 1000:
-                focusing(af['focal_distance'])
+        if not af['focus_finished']:
+            if af['settle_frames'] > 0:
+                af['settle_frames'] -= 1
+            else:
                 val = laplacian(img)
                 if val > af['max_value']:
                     af['max_index'] = af['focal_distance']
                     af['max_value'] = val
-                if val < af['last_value']:
+
+                if af['last_value'] >= 0 and val < af['last_value']:
                     af['dec_count'] += 1
                 else:
                     af['dec_count'] = 0
-                if af['dec_count'] < 6:
-                    af['last_value'] = val
+
+                af['last_value'] = val
+
+                if af['dec_count'] >= 6 or af['focal_distance'] >= 1000:
+                    focusing(af['max_index'])
+                    af['focus_finished'] = True
+                else:
                     af['focal_distance'] += 10
-            elif not af['focus_finished']:
-                focusing(af['max_index'])
-                af['focus_finished'] = True
-        else:
-            skip_frame -= 1
+                    focusing(af['focal_distance'])
+                    af['settle_frames'] = 3
 
         key = cv2.waitKey(1) & 0xFF
         if key == 27:
