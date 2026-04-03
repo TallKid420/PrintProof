@@ -1,12 +1,12 @@
-# PrintProof dependencies
+# Iris dependencies
 # Install with: pip3 install --user -r requirements.txt
 
-# Required for Excel batch parsing
-openpyxl
+# Spreadsheet parsing
+openpyxl>=3.1
 
-# Optional OCR-only extras
-pytesseract
+# Camera preview/capture UI uses PIL Image/ImageTk
+Pillow>=10.0
 
-# OpenCV is intentionally not listed here.
-# On Jetson, use system package for GStreamer camera support:
-#   sudo apt install python3-opencv
+# Use opencv-python on desktop/dev.
+# On Jetson, prefer apt package (python3-opencv) for GStreamer support.
+opencv-python>=4.8; platform_system != "Linux" or platform_machine != "aarch64"
